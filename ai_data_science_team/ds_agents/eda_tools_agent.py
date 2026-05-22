@@ -4,7 +4,7 @@ import pandas as pd
 
 from IPython.display import Markdown
 
-from langchain_core.messages import BaseMessage, AIMessage
+from langchain_core.messages import BaseMessage, AIMessage, HumanMessage
 
 try:
     from langgraph.prebuilt import create_react_agent
@@ -354,10 +354,21 @@ def make_eda_tools_agent(
             "You are an EDA agent. You have access to the dataset in state as data_raw. "
             "Use the provided EDA tools to summarize or visualize the data, then return concise results."
         )
-        base_messages = state.get("messages", []) or [
-            ("user", state.get("user_instructions"))
-        ]
-        messages = [("system", system_hint)] + base_messages
+        base_messages = state.get("messages", []) or []
+        
+        # Filter messages to ensure only human/user messages are passed,
+        # preventing trailing AIMessages from other agents from stopping execution
+        filtered_messages = []
+        for msg in base_messages:
+            role = getattr(msg, "role", None) or getattr(msg, "type", None)
+            if role in ("user", "human"):
+                filtered_messages.append(msg)
+                
+        if not filtered_messages:
+            instr = state.get("user_instructions") or "Perform exploratory data analysis on the dataset."
+            filtered_messages = [HumanMessage(content=instr)]
+            
+        messages = [("system", system_hint)] + filtered_messages
 
         input_payload = {
             "messages": messages,
@@ -464,7 +475,7 @@ def make_eda_tools_agent(
 
     workflow = StateGraph(GraphState)
     workflow.add_node("prepare_messages", prepare_messages)
-    workflow.add_node("react_agent", react_agent)
+    workflow.add_node("react_agent", run_react_agent)
     workflow.add_node("post_process", post_process)
     workflow.add_edge(START, "prepare_messages")
     workflow.add_edge("prepare_messages", "react_agent")

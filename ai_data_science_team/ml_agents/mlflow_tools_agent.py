@@ -5,7 +5,7 @@ import pandas as pd
 
 from IPython.display import Markdown
 
-from langchain_core.messages import BaseMessage, AIMessage
+from langchain_core.messages import BaseMessage, AIMessage, HumanMessage
 
 try:
     from langgraph.prebuilt import create_react_agent
@@ -415,12 +415,34 @@ def make_mlflow_tools_agent(
         print("    * PREPARE MESSAGES")
         if state.get("messages"):
             return {}
+        return {"messages": [("user", state.get("user_instructions"))]}
+
+    def run_react_agent(state: GraphState):
+        print("    * RUN REACT TOOL-CALLING AGENT FOR MLFLOW")
         system_hint = (
             "You are an MLflow tools agent. Use the provided MLflow tools to inspect or manage MLflow, "
             "and return concise results. The tracking URI and registry URI are already configured."
         )
-        base_messages = [("user", state.get("user_instructions"))]
-        return {"messages": [("system", system_hint)] + base_messages}
+        base_messages = state.get("messages", []) or []
+        
+        # Filter messages to ensure only human/user messages are passed,
+        # preventing trailing AIMessages from stopping execution
+        filtered_messages = []
+        for msg in base_messages:
+            role = getattr(msg, "role", None) or getattr(msg, "type", None)
+            if role in ("user", "human"):
+                filtered_messages.append(msg)
+                
+        if not filtered_messages:
+            instr = state.get("user_instructions") or "List the MLflow experiments"
+            filtered_messages = [HumanMessage(content=instr)]
+            
+        messages = [("system", system_hint)] + filtered_messages
+
+        input_payload = {
+            "messages": messages,
+        }
+        return react_agent.invoke(input_payload, invoke_react_agent_kwargs)
 
     def post_process(state: GraphState):
         print("    * POST-PROCESS RESULTS")
@@ -558,7 +580,7 @@ def make_mlflow_tools_agent(
     workflow = StateGraph(GraphState)
 
     workflow.add_node("prepare_messages", prepare_messages)
-    workflow.add_node("react_agent", react_agent)
+    workflow.add_node("react_agent", run_react_agent)
     workflow.add_node("post_process", post_process)
 
     workflow.add_edge(START, "prepare_messages")

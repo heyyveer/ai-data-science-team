@@ -5,7 +5,7 @@ from typing import Sequence, TypedDict, Annotated, Optional, Dict, Any, List
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from IPython.display import Markdown
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.output_parsers.openai_functions import JsonOutputFunctionsParser
+from langchain_core.output_parsers.openai_tools import JsonOutputToolsParser
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnableLambda
 from langchain_core.utils.json import parse_json_markdown
@@ -258,18 +258,21 @@ Examples:
     route_options = ["FINISH"] + subagent_names
 
     function_def = {
-        "name": "route",
-        "description": "Select the next worker.",
-        "parameters": {
-            "title": "route_schema",
-            "type": "object",
-            "properties": {
-                "next": {
-                    "title": "Next",
-                    "anyOf": [{"enum": route_options}],
-                }
+        "type": "function",
+        "function": {
+            "name": "route",
+            "description": "Select the next worker.",
+            "parameters": {
+                "title": "route_schema",
+                "type": "object",
+                "properties": {
+                    "next": {
+                        "title": "Next",
+                        "anyOf": [{"enum": route_options}],
+                    }
+                },
+                "required": ["next"],
             },
-            "required": ["next"],
         },
     }
 
@@ -293,7 +296,7 @@ Examples:
         Parse router output into {"next": <route_option>}.
 
         Supports:
-        - OpenAI function-calling JSON via JsonOutputFunctionsParser (handled separately)
+        - OpenAI tool-calling JSON via JsonOutputToolsParser (handled separately)
         - Raw JSON / JSON-in-markdown
         - Plain-text worker name
         """
@@ -332,13 +335,22 @@ Examples:
         return {"next": "FINISH"}
 
     # Router chain:
-    # - For OpenAI models: use function-calling for high-precision routing.
+    # - For OpenAI-compatible models: use tool-calling for high-precision routing.
     # - For other chat models (e.g., Ollama): fall back to strict text parsing.
+    def _extract_tool_args(tool_calls):
+        """Extract the args dict from the first tool call returned by JsonOutputToolsParser."""
+        if isinstance(tool_calls, list) and tool_calls:
+            return tool_calls[0].get("args", {"next": "FINISH"})
+        if isinstance(tool_calls, dict):
+            return tool_calls.get("args", {"next": "FINISH"})
+        return {"next": "FINISH"}
+
     if isinstance(llm, ChatOpenAI):
         supervisor_chain = (
             prompt
-            | llm.bind(functions=[function_def], function_call={"name": "route"})
-            | JsonOutputFunctionsParser()
+            | llm.bind_tools([function_def], tool_choice={"type": "function", "function": {"name": "route"}})
+            | JsonOutputToolsParser()
+            | RunnableLambda(_extract_tool_args)
         )
     else:
         supervisor_chain = (
@@ -347,7 +359,7 @@ Examples:
 
     def _clean_messages(msgs: Sequence[BaseMessage]) -> Sequence[BaseMessage]:
         """
-        Strip tool call payloads to avoid OpenAI 'tool_calls' vs 'functions' conflicts.
+        Strip tool call payloads to avoid conflicts in the routing chain.
         Skip tool/function role messages; drop tool_calls field from AI messages.
         """
         cleaned: list[BaseMessage] = []
@@ -1054,6 +1066,11 @@ Examples:
                 and state.get("mlflow_artifacts") is not None
             ):
                 handled_steps["mlflow_tools"] = True
+
+        # If data is already ready and we did not explicitly request to load a file,
+        # treat the load step as already handled.
+        if data_ready and not intents.get("load"):
+            handled_steps["load"] = True
 
         step_to_worker = {
             "list_files": "Data_Loader_Tools_Agent",

@@ -6,7 +6,7 @@ import os
 
 from IPython.display import Markdown
 
-from langchain_core.messages import BaseMessage, AIMessage
+from langchain_core.messages import BaseMessage, AIMessage, HumanMessage
 
 try:
     from langgraph.prebuilt import create_react_agent
@@ -343,10 +343,21 @@ def make_data_loader_tools_agent(
             "- Use load_directory only when the user explicitly asks to load ALL files in a directory.\n"
             "Prefer search_files_by_pattern for extension filters (e.g., pattern='*.csv')."
         )
-        base_messages = state.get("messages", []) or [
-            ("user", state.get("user_instructions"))
-        ]
-        messages = [("system", system_hint)] + base_messages
+        base_messages = state.get("messages", []) or []
+        
+        # Filter messages to ensure only human/user messages are passed,
+        # preventing trailing AIMessages from stopping execution
+        filtered_messages = []
+        for msg in base_messages:
+            role = getattr(msg, "role", None) or getattr(msg, "type", None)
+            if role in ("user", "human"):
+                filtered_messages.append(msg)
+                
+        if not filtered_messages:
+            instr = state.get("user_instructions") or "List the files in data directory."
+            filtered_messages = [HumanMessage(content=instr)]
+            
+        messages = [("system", system_hint)] + filtered_messages
         input_payload = {"messages": messages}
         return react_agent.invoke(input_payload, invoke_react_agent_kwargs)
 
